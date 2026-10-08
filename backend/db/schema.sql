@@ -26,6 +26,9 @@ CREATE TABLE users (
     -- professor-only
     dept          TEXT,
     school        TEXT,
+    -- soft delete: 탈퇴 시 행은 남기고 비활성화만 한다.
+    is_active      BOOLEAN     NOT NULL DEFAULT TRUE,
+    deactivated_at TIMESTAMPTZ,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT year_range CHECK (year IS NULL OR year BETWEEN 1 AND 6)
 );

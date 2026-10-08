@@ -28,6 +28,9 @@ CREATE TABLE users (
     -- professor-only
     dept          VARCHAR(255) NULL,
     school        VARCHAR(255) NULL,
+    -- soft delete: 탈퇴 시 행은 남기고 비활성화만 한다.
+    is_active      TINYINT(1)  NOT NULL DEFAULT 1,
+    deactivated_at TIMESTAMP   NULL,
     created_at    TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
     UNIQUE KEY uq_users_email (email),

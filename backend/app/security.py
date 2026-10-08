@@ -54,6 +54,12 @@ def get_current_user(
     user = db.scalar(select(User).where(User.id == uuid.UUID(user_id)))
     if user is None:
         raise cred_exc
+    # soft delete: 비활성(탈퇴) 계정은 유효한 토큰이어도 거부한다.
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="탈퇴한 계정입니다.",
+        )
     return user
 
 

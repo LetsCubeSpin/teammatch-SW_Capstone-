@@ -43,6 +43,9 @@ class User(Base):
     # professor
     dept: Mapped[str | None] = mapped_column(String)
     school: Mapped[str | None] = mapped_column(String)
+    # soft delete: 탈퇴해도 행은 남기고 비활성화만 한다.
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    deactivated_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
