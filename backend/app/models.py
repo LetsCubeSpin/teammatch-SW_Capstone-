@@ -9,6 +9,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
+    Enum as SQLEnum,
     ForeignKey,
     Numeric,
     SmallInteger,
@@ -31,7 +32,10 @@ class User(Base):
     __tablename__ = "users"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
-    role: Mapped[str] = mapped_column(String, nullable=False)  # 'student' | 'professor'
+    role: Mapped[str] = mapped_column(
+        SQLEnum('student', 'professor', name='user_role', create_type=False), 
+        nullable=False
+    )
     email: Mapped[str] = mapped_column(String, nullable=False, unique=True)
     password_hash: Mapped[str] = mapped_column(String, nullable=False)
     name: Mapped[str] = mapped_column(String, nullable=False)
@@ -58,7 +62,10 @@ class Class(Base):
     join_code: Mapped[str] = mapped_column(String, nullable=False, unique=True)
     survey_deadline: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
     kind: Mapped[str | None] = mapped_column(String)
-    status: Mapped[str] = mapped_column(String, default="설문 진행 중")
+    status: Mapped[str] = mapped_column(
+        SQLEnum('설문 진행 중', '편성 대기', '편성 완료', name='class_status', create_type=False),
+        default="설문 진행 중"
+    )
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     enrollments: Mapped[list[Enrollment]] = relationship(back_populates="klass", cascade="all, delete-orphan")
@@ -126,7 +133,10 @@ class SurveyAvailability(Base):
     survey_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("survey_responses.id", ondelete="CASCADE"))
     day: Mapped[int] = mapped_column(SmallInteger, nullable=False)  # 0=월..6=일
     block: Mapped[int] = mapped_column(SmallInteger, nullable=False)
-    state: Mapped[str] = mapped_column(String, nullable=False)  # 'y' | 'n'
+    state: Mapped[str] = mapped_column(
+        SQLEnum('y', 'n', name='avail_state', create_type=False),
+        nullable=False
+    )
 
 
 class MatchPreset(Base):
