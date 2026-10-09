@@ -76,19 +76,28 @@ def run_match(
     prof: User = Depends(require_professor),
     db: Session = Depends(get_db),
 ) -> MatchResultOut:
-    # 1. 수업 존재 및 소유 권한 검증
+    # 1. 수업 존재(404) 및 소유 권한 검증(403)
     c = db.get(Class, class_id)
-    if not c or c.professor_id != prof.id:
+    if not c:
         raise HTTPException(status_code=404, detail="수업을 찾을 수 없습니다.")
+    if c.professor_id != prof.id:
+        raise HTTPException(status_code=403, detail="해당 수업의 담당 교수만 매칭을 진행할 수 있습니다.")
 
-    # 2. 팀 크기 유효성 검사 (0 이하 방지)
+    # 2. 중복 실행 방지 (409 Conflict)
+    if c.status == "편성 완료":
+        raise HTTPException(status_code=409, detail="이미 팀 편성이 완료된 수업입니다.")
+
+    # 3. 팀 크기 유효성 검사 (422 Unprocessable Entity)
     if body.team_size <= 0:
-        raise HTTPException(status_code=400, detail="팀 크기는 1명 이상이어야 합니다.")
+        raise HTTPException(status_code=422, detail="팀 크기는 1명 이상이어야 합니다.")
 
-    # 3. 대상 학생 조회 및 제출 인원 검증
+    # 4. 대상 학생 조회 및 제출 인원 검증 (422 Unprocessable Entity)
     candidates, users = _load_candidates(db, class_id)
     if not candidates:
-        raise HTTPException(status_code=400, detail="매칭 참여가 가능한 설문 제출 학생이 없습니다.")
+        raise HTTPException(
+            status_code=422,
+            detail="매칭 참여가 가능한 설문 제출 학생이 없습니다."
+        )
 
     if len(candidates) < body.team_size:
         raise HTTPException(
@@ -96,7 +105,7 @@ def run_match(
             detail=f"편성 가능한 제출자가 부족합니다. (현재 {len(candidates)}명 / 필요 최소 {body.team_size}명)",
         )
 
-    # 4. 매칭 엔진 실행 및 예외 처리
+    # 5. 매칭 엔진 실행 및 예외 처리 (500 Internal Server Error)
     try:
         outcome = engine.form_teams(
             candidates,
@@ -107,7 +116,7 @@ def run_match(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"매칭 연산 중 오류가 발생했습니다: {str(e)}")
 
-    # 5. 매칭 결과 정합성 검증 (누락 및 중복 배정 체크)
+    # 6. 매칭 결과 정합성 검증 (누락 및 중복 배정 체크 -> 500)
     assigned_ids = [m.student_id for tr in outcome.teams for m in tr.members]
     if len(assigned_ids) != len(candidates):
         raise HTTPException(
@@ -117,7 +126,7 @@ def run_match(
     if len(set(assigned_ids)) != len(assigned_ids):
         raise HTTPException(status_code=500, detail="매칭 결과 내 중복 배정된 학생이 존재합니다.")
 
-    # 6. 매칭 실행 이력 저장 (MatchRun)
+    # 7. 매칭 실행 이력 저장 (MatchRun)
     run = MatchRun(
         class_id=class_id,
         team_size=body.team_size,
@@ -135,7 +144,7 @@ def run_match(
     db.add(run)
     db.flush()
 
-    # 7. 생성된 팀 및 팀원 데이터 저장 (Teams & TeamMembers)
+    # 8. 생성된 팀 및 팀원 데이터 저장 (Teams & TeamMembers)
     team_out: list[TeamOut] = []
     for i, tr in enumerate(outcome.teams, start=1):
         team = Team(run_id=run.id, class_id=class_id, name=f"{i}팀", fit_score=tr.fit_score)
