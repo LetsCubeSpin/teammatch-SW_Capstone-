@@ -1,0 +1,291 @@
+============================================================
+ TeamMatch 백엔드 작업 분담 & 할 일 (TODO)
+ - 사진(백엔드1 / 백엔드2 분담표)을 기준으로 정리
+ - [v] 이미 코드가 있는 항목 / [ ] 아직 안 된 항목
+ - 작성 시점 기준 현재 코드 상태와 대조한 결과입니다.
+============================================================
+
+------------------------------------------------------------
+[중요] 왜 폴더로 나누지 않았는가
+------------------------------------------------------------
+이 백엔드는 하나의 Python 패키지로, 파일들이 상대 import로 얽혀 있습니다.
+(예: routers/matching_v2.py -> engine/, matching.py, security.py 참조)
+파일을 backend1/ backend2/ 로 물리적으로 쪼개면 import 경로가 전부 깨져
+앱이 실행되지 않습니다. 그래서 "폴더 이동" 대신, 아래처럼 각 파일의
+담당자를 문서로 정하는 "소유권(ownership) 표"로 분담합니다.
+(코드는 하나의 패키지로 함께 돌아가고, 담당만 나뉩니다.)
+
+------------------------------------------------------------
+[파일 소유권 표] 누가 어느 파일을 맡는가
+------------------------------------------------------------
+공통(둘 다 건드림, 변경 시 상의):
+   app/main.py            # 라우터 연결 지점
+   app/database.py        # DB 세션
+   app/schemas.py         # 요청/응답 모델 (양쪽 스키마가 공존)
+   app/config.py          # 환경설정
+   db/schema.sql          # 공통 스키마
+   db/schema.mysql.sql    # 공통 스키마(MySQL)
+
+[백엔드 1] 담당 파일 — 사용자/수업/권한/결과저장:
+   app/models.py              # 전체 ORM (스키마 소유자 역할)
+   app/security.py            # 인증/권한 (JWT, require_professor/student)
+   app/routers/auth.py        # 회원/인증 API
+   app/routers/classes.py     # 과목/학생/명단 API
+   (매칭 결과 저장 테이블: models.py의 MatchRun/Team/TeamMember)
+
+[백엔드 2] 담당 파일 — 설문/매칭/AI 엔진:
+   app/matching.py            # (기존) 그리디 매칭 엔진
+   app/engine/__init__.py     # v2 엔진 패키지
+   app/engine/constraints.py  # 목적함수 J / 가중치 / 하드제약
+   app/engine/precheck.py     # 실행 전 점검
+   app/engine/optimizer.py    # 초기배정->LS->SA->best-of-3
+   app/engine/nl_rules.py     # 주관식 요구사항 해석(DSL)
+   app/routers/surveys.py     # 설문/프로필 API
+   app/routers/matching.py    # (기존) 매칭 실행/프리셋 API
+   app/routers/matching_v2.py # v2 매칭: 점검/실행/지표
+   tests/test_matching.py     # 기존 엔진 테스트
+   tests/test_engine_v2.py    # v2 엔진 테스트
+   tests/test_match_guards.py # 매칭 예외처리(가드) 테스트
+
+공통 문서(둘 다 참고):
+   README.md                  # 설치/구조/엔진 설명
+   TESTING.md                 # 테스트 가이드 + 문제점 분석
+   TODO.txt                   # 분담 & 진행 상황(이 파일)
+
+============================================================
+
+------------------------------------------------------------
+[백엔드 1] 담당  —  사용자 / 수업 / 매칭 결과 저장 중심
+------------------------------------------------------------
+
+1) DB 구조 설계
+   - 회원·학생·과목 데이터 모델 설계
+   - 서버 기본 환경 구축
+   현재 상태:
+   [v] users / classes / enrollments 테이블 설계됨 (db/schema.sql)
+   [v] 서버 기본 환경: FastAPI + SQLAlchemy 세팅 완료
+       (app/config.py, app/database.py, app/main.py)
+   [ ] (선택) MySQL로 갈 경우 schema.mysql.sql 기준으로 모델/드라이버 맞추기
+
+2) 회원/인증 API
+   - 회원가입·로그인
+   - 사용자 정보 CRUD
+   현재 상태:
+   [v] 회원가입 POST /api/auth/signup
+   [v] 로그인   POST /api/auth/login (JWT 발급)
+   [v] 내 정보  GET  /api/auth/me
+   [v] 프로필 수정 PUT /api/auth/me (부분 수정, 이메일/비밀번호 변경 포함)
+   [v] 회원 탈퇴 DELETE /api/auth/me (soft delete: is_active=False)
+       -> 행 보존(수업/매칭/설문 유지), 로그인·인증에서 비활성 계정 차단
+       -> users 테이블에 is_active / deactivated_at 컬럼 추가(2개 스키마 반영)
+
+3) 과목/학생 API
+   - 과목 생성·수정·삭제
+   - 학생 과목 참여/조회
+   현재 상태:
+   [v] 과목 생성 POST /api/classes
+   [v] 과목 목록 GET  /api/classes
+   [v] 학생 참여 POST /api/classes/join (참여 코드)
+   [v] 명단 조회 GET  /api/classes/{id}/roster
+   [v] 과목 수정 PUT    /api/classes/{id} (교수 소유 확인, 부분 수정)
+   [v] 과목 삭제 DELETE /api/classes/{id} (교수 소유 확인, 204)
+
+4) 매칭 데이터 제공 API
+   - 학생 정보 조회
+   - 조건 및 제약조건 전달
+   현재 상태:
+   [v] 매칭 실행 시 설문 제출자 정보를 내부에서 모아 엔진에 전달
+       (app/routers/matching.py 의 _load_candidates)
+   [v] 가중치/하드 제약조건 전달 구조 있음 (schemas.py: Weights, HardConstraints)
+   [v] 매칭 전 대상/조건 미리 조회 GET /api/classes/{id}/candidates
+       -> 제출자 목록 + 학과/희망역할 분포 + ready 인원 요약 반환
+
+5) 매칭 결과 저장 API
+   - 매칭 이력 관리
+   - 팀 결과 조회
+   현재 상태:
+   [v] 매칭 실행 결과를 match_runs/teams/team_members에 저장
+   [ ] "저장된 결과 다시 조회"하는 API 없음
+       -> GET /api/classes/{id}/result (최신 결과)
+       -> GET /api/runs/{run_id} (특정 이력) 추가 필요
+
+6) 팀원/학생 정보 API
+   - 팀원 상세 정보
+   - 일정 정보 조회
+   현재 상태:
+   [v] 설문에 일정(availability) 저장/조회 있음 (surveys.py)
+   [ ] "팀 단위"로 팀원 상세 + 일정을 묶어서 보여주는 API 없음
+       -> GET /api/teams/{team_id} 추가 필요
+
+7) 권한/사용자 관리
+   - 교수·학생 접근 권한
+   - 과목별 접근 제어
+   현재 상태:
+   [v] 교수/학생 역할 구분 및 권한 강제 (security.py: require_professor/require_student)
+   [v] 수업 소유자(교수) 확인 로직 일부 있음 (classes/matching에서 professor_id 체크)
+   [ ] 과목별 접근 제어를 모든 엔드포인트에서 일관되게 점검 필요(검토 작업)
+
+8) API 통합 및 예외 처리
+   - 인증/권한 오류 수정
+   - DB 최적화
+   현재 상태:
+   [ ] 공통 예외 처리/에러 응답 형식 정리 필요
+   [ ] 자주 쓰는 조회에 인덱스/쿼리 점검(일부 인덱스는 schema에 있음)
+
+9) 백엔드 QA
+   - API 테스트
+   - 보안/권한 점검
+   - 성능 개선
+   현재 상태:
+   [v] 매칭 엔진 단위 테스트 있음 (tests/test_matching.py)
+   [v] pytest 실제 실행 검증 완료 -> 17개 전부 통과
+       (엔진/v2/가드 테스트, DB 불필요한 범위)
+   [v] 앱 import·엔드포인트 등록 확인(19개 라우트 정상 로드)
+   [ ] 전체 API 흐름(HTTP+DB) 테스트는 PostgreSQL 필요라 미실행
+       -> SQLite는 ARRAY 미지원이라 불가, 실제 DB로만 가능
+   [ ] 보안 점검(토큰 만료, 권한 우회 등) 체크리스트 필요
+
+10) 서버 최종 배포
+    - DB/서버 점검
+    - 운영 환경 설정
+    현재 상태:
+    [ ] 배포 설정 없음 (Dockerfile/compose, 운영용 .env, 호스팅 선택 등)
+    [ ] 운영 DB 연결 및 마이그레이션 전략 필요
+
+
+------------------------------------------------------------
+[백엔드 2] 담당  —  팀/매칭/설문 + AI 연동 중심
+------------------------------------------------------------
+
+1) DB 구조 설계
+   - 팀·매칭·설문 데이터 모델 설계
+   - API 구조 및 AI 연동 방식 설계
+   현재 상태:
+   [v] survey_responses/skills/availability, match_presets,
+       match_runs/teams/team_members 테이블 설계됨 (schema.sql)
+   [v] API 구조 잡힘 (routers 5개: auth/classes/surveys/matching/matching_v2)
+   [v] AI 매칭 엔진 설계 완료 -> engine/ 패키지로 구현
+       (목적함수 J, 가중치, 하드제약, 사전점검, 최적화, 주관식 해석)
+   [~] "외부 AI 서버" 연동 방식은 여전히 선택 사항
+       -> 현재는 서버 내장 엔진 + 주관식 해석에 LLM 콜백 자리만 열어둠
+
+2) 초기 API 환경 구축
+   - 팀/매칭 관련 API 기본 구조
+   현재 상태:
+   [v] 기존 매칭 라우터 (app/routers/matching.py)
+   [v] v2 매칭 라우터 추가 (app/routers/matching_v2.py)
+
+3) 설문/프로필 데이터 API
+   - 역할·기술 스택·일정·협업 성향 데이터 처리
+   현재 상태:
+   [v] 설문 제출/조회 PUT·GET /api/classes/{id}/survey
+       (역할, 스킬, 성향 traits, 가용시간 availability 모두 처리)
+
+4) 매칭 API 개발
+   - 팀 생성/관리
+   - AI 요청/응답 구조 구현
+   현재 상태:
+   [v] 기존 팀 생성 POST /api/classes/{id}/match
+   [v] v2 실행 전 점검 POST /api/classes/{id}/precheck (사진 4)
+   [v] v2 매칭 실행 POST /api/classes/{id}/match-v2 (사진 5~10)
+   [v] 요청/응답 구조 정의
+       (MatchV2Request / MatchV2Result: J, 평균/최저 조화도,
+        하드위반, 교환수, 팀별결과, 조화도추이, 주관식해석)
+   [v] 목적함수 J = 평균 조화도 + 최저 팀 − 1000×하드위반 구현
+   [v] 4단계 최적화: 초기배정 -> LS(2명교환) -> SA(어닐링) -> best-of-3
+
+5) AI 서버/API 연동
+   - 매칭 결과 처리
+   - 팀별 점수 및 조건 저장
+   현재 상태:
+   [v] 팀별 조화도 점수 및 최저 팀 식별(주황 테두리) 저장/반환
+   [v] 매칭 조건(가중치/하드)과 평균 점수 match_runs에 저장
+   [v] 주관식 요구사항 -> 조건 해석기(engine/nl_rules.py)
+       LLM 콜백 주입 가능(없으면 규칙기반 폴백)
+   [ ] 하드제약 "세부값"(상한/지정쌍 등) 저장은 아직 bool 플래그만
+       -> models/schema에 JSON 등 전용 컬럼 추가 필요
+   [ ] 실제 외부 LLM/AI 서버 실연동은 미구현(자리만 열림)
+
+6) 팀 관리 API
+   - 팀 확정/변경
+   - 팀원 교체 및 상태 관리
+   현재 상태:
+   [ ] 팀 수정/확정 API 없음
+       -> PATCH /api/teams/{id} (팀원 교체 등)
+       -> 팀 확정 상태 플래그 추가 필요
+
+7) 팀 수정/확정 API 완성
+   - 교수의 팀 수정사항 저장
+   - 최종 팀 확정
+   현재 상태:
+   [ ] 위 6번과 연결 -> 교수가 수동 조정 후 최종 확정하는 흐름 구현 필요
+
+8) AI 매칭 API 통합
+   - 팀 데이터 연동
+   - 매칭 결과 오류 처리
+   현재 상태:
+   [v] 실행 전 점검으로 불가능 조건은 완화안과 함께 막음(precheck)
+   [v] 매칭 예외처리 강화(계층 방어 4단계):
+       1) 제출자 0명 -> "설문 제출 학생이 없습니다" (설문 독려 신호)
+       2) 제출자 < team_size -> 현재/팀크기 함께 안내
+       3) 엔진이 빈 결과 -> 저장 안 하고 422
+       4) 중복 배정 안전망(_assert_no_duplicate_assignment) -> 500 차단
+   [v] 결과를 기존 match_runs/teams/team_members에 저장 연동
+   [v] 가드 단위 테스트 추가(tests/test_match_guards.py)
+
+9) 매칭 시스템 QA
+   - 팀 생성/변경 테스트
+   - AI 연동 오류 수정
+   현재 상태:
+   [v] 기존 엔진 테스트 (tests/test_matching.py)
+   [v] v2 엔진 테스트 (tests/test_engine_v2.py:
+       소프트점수/J패널티/전원배정/시드결정성/사전점검/주관식해석)
+   [v] pytest 실제 실행 완료 -> 17개 통과 (실행 중 잘못 짠 테스트 1건 발견·수정)
+   [ ] 팀 변경/확정 흐름 테스트 없음 -> 기능 구현 후 추가
+
+10) AI/매칭 시스템 최종 배포
+    - 테스트 데이터 관리
+    - 시연 데이터 준비
+    현재 상태:
+    [ ] 시연용 샘플 데이터(학생 45명/설문) 시드 스크립트 필요
+        (지금은 프리셋 ps0~ps4만 시드되어 있음)
+    [ ] 사진의 '성능 리포트'(랜덤 vs 그리디 vs TeamFit 비교) 미구현
+
+
+------------------------------------------------------------
+[이번에 새로 완료된 것] TeamFit AI 엔진(v2)
+------------------------------------------------------------
++ engine/ 패키지 신설: constraints / precheck / optimizer / nl_rules
++ 목적함수 J, 소프트 가중치(Σwₖsₖ/Σwₖ×100), 하드제약 구현
++ 실행 전 점검(+완화안), 4단계 최적화(초기배정->LS->SA->best-of-3)
++ 주관식 요구사항 해석기(규칙기반, LLM 콜백 자리 포함)
++ 엔드포인트 2개: /precheck, /match-v2 (main.py에 연결)
++ v2 엔진 테스트: tests/test_engine_v2.py (단, 아직 실행 검증 전)
++ README에 v2 엔진 섹션 문서화
+
+------------------------------------------------------------
+[요약] 아직 비어 있는 핵심 할 일 (우선순위 추천)
+------------------------------------------------------------
+공통/백엔드1:
+1. 사용자/과목 "수정·삭제" API 추가 (CRUD의 U/D가 빠져 있음)
+2. 저장된 매칭 결과 "조회" API 추가 (현재는 저장만 되고 다시 못 봄)
+3. 팀 "수정/확정" API 추가 (교수가 결과를 손보고 확정하는 흐름)
+4. 팀 단위 상세 조회 API (팀원 + 일정 묶어서)
+5. 라우터(API) 레벨 테스트 + 보안/권한 점검
+
+백엔드2:
+6. 하드제약 세부값 저장용 컬럼 추가 (상한/지정쌍 등, 현재 bool만)
+7. 사진의 '성능 리포트'(랜덤 vs 그리디 vs TeamFit) 엔드포인트
+8. 외부 LLM 실연동 여부 결정 (지금은 콜백 자리만)
+
+공통(배포/검증):
+9. 실제 PostgreSQL로 전체 API 흐름 테스트 (pytest 엔진 검증은 완료,
+   HTTP+DB 통합은 미실행 — SQLite ARRAY 미지원으로 실제 DB 필요)
+10. 배포 설정(.gitignore, Docker/운영 .env, 시연용 학생 45명 시드)
+    + requirements.txt를 Python 3.14 호환 버전으로 갱신 필요
+      (현재 핀 버전은 3.14에서 pydantic/psycopg 설치 실패)
+
+* 참고: 이 백엔드는 현재 PostgreSQL 기준으로 동작합니다.
+  MySQL로 가려면 모델 타입/드라이버 수정이 추가로 필요합니다.
+* 참고: engine/ 패키지는 DB와 무관한 순수 파이썬이라, 담당자가
+  나뉘어도 독립적으로 작업·테스트하기 쉽습니다.

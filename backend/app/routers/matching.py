@@ -69,6 +69,23 @@ def _load_candidates(db: Session, class_id: uuid.UUID) -> tuple[list[engine.Cand
         )
     return candidates, users
 
+
+def _assert_no_duplicate_assignment(teams) -> None:
+    """엔진 결과 안전망: 한 학생이 두 팀 이상에 배정되지 않았는지 검증.
+
+    엔진에 버그가 생겨도 잘못된 편성을 DB에 저장하지 않도록 막는 최후 방어선.
+    """
+    seen: set[str] = set()
+    for tr in teams:
+        for m in tr.members:
+            if m.student_id in seen:
+                raise HTTPException(
+                    status_code=500,
+                    detail="편성 결과에 중복 배정된 학생이 있습니다. 매칭을 다시 실행하세요.",
+                )
+            seen.add(m.student_id)
+
+
 @router.post("/classes/{class_id}/match", response_model=MatchResultOut)
 def run_match(
     class_id: uuid.UUID,
@@ -93,16 +110,18 @@ def run_match(
 
     # 4. 대상 학생 조회 및 제출 인원 검증 (422 Unprocessable Entity)
     candidates, users = _load_candidates(db, class_id)
-    if not candidates:
+
+    # 계층 방어 1: 제출자가 아예 없음 (교수의 조치 = 학생에게 설문 독려)
+    if len(candidates) == 0:
         raise HTTPException(
             status_code=422,
-            detail="매칭 참여가 가능한 설문 제출 학생이 없습니다."
+            detail="매칭 참여가 가능한 설문 제출 학생이 없습니다.",
         )
-
+    # 계층 방어 2: 제출자는 있으나 팀 크기보다 적음 (조치 = team_size 조정)
     if len(candidates) < body.team_size:
         raise HTTPException(
             status_code=422,
-            detail=f"편성 가능한 제출자가 부족합니다. (현재 {len(candidates)}명 / 필요 최소 {body.team_size}명)",
+            detail=f"편성 가능한 제출자가 부족합니다. (현재 {len(candidates)}명 / 팀 크기 {body.team_size}명)",
         )
 
     # 5. 매칭 엔진 실행 및 예외 처리 (500 Internal Server Error)
@@ -116,17 +135,17 @@ def run_match(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"매칭 연산 중 오류가 발생했습니다: {str(e)}")
 
-    # 6. 매칭 결과 정합성 검증 (누락 및 중복 배정 체크 -> 500)
-    assigned_ids = [m.student_id for tr in outcome.teams for m in tr.members]
-    if len(assigned_ids) != len(candidates):
+    # 계층 방어 3: 엔진이 빈 결과를 돌려주면 저장하지 않고 중단
+    if not outcome.teams:
         raise HTTPException(
-            status_code=500, 
-            detail=f"매칭 인원 불일치 (원래 인원: {len(candidates)}명, 배정 인원: {len(assigned_ids)}명)"
+            status_code=422,
+            detail="주어진 조건으로 팀을 편성하지 못했습니다. 조건을 완화해 보세요.",
         )
-    if len(set(assigned_ids)) != len(assigned_ids):
-        raise HTTPException(status_code=500, detail="매칭 결과 내 중복 배정된 학생이 존재합니다.")
+    # 계층 방어 4: 중복 배정 안전망
+    _assert_no_duplicate_assignment(outcome.teams)
 
-    # 7. 매칭 실행 이력 저장 (MatchRun)
+    # Persist run + teams (replace any prior run for this class is left to caller;
+    # here we simply append a new immutable run).
     run = MatchRun(
         class_id=class_id,
         team_size=body.team_size,
