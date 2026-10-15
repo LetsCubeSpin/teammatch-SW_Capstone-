@@ -1,0 +1,22 @@
+# Python 및 가상환경
+.venv/
+venv/
+ENV/
+__pycache__/
+*.py[cod]
+
+# Pytest 및 테스트 캐시
+.pytest_cache/
+
+# 환경 변수 (보안 파일)
+.env
+.env.*
+!.env.example
+
+# IDE 및 OS 임시 파일
+.DS_Store
+.idea/
+.vscode/
+
+# 잘못 올라간 .git 디렉터리 방지
+.git/
